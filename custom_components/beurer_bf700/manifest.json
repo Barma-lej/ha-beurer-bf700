@@ -1,0 +1,16 @@
+{
+  "domain": "beurer_bf700",
+  "name": "Beurer BF 700 Scale",
+  "codeowners": ["@Barma-lej"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/Barma-lej/ha-beurer-bf700",
+  "iot_class": "local_polling",
+  "requirements": ["bleak>=0.21.0"],
+  "bluetooth": [
+    {
+      "local_name": "BEURER BF700*"
+    }
+  ],
+  "version": "0.1.0"
+}
