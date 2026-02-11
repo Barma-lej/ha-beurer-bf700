@@ -1,8 +1,10 @@
 """Константы для Beurer BF 700."""
+from homeassistant.const import CONF_MAC_ADDRESS
+
 DOMAIN = "beurer_bf700"
 
 # Конфигурация
-CONF_MAC = "mac_address"
+CONF_MAC = CONF_MAC_ADDRESS
 
 # Протокол BF 700
 CMD_START = 0xF7
