@@ -1,0 +1,5 @@
+{
+  "name": "Beurer BF 700 Scale",
+  "render_readme": true,
+  "domains": ["sensor"]
+}
