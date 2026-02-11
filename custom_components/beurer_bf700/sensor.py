@@ -7,9 +7,19 @@ from .const import DOMAIN, SERVICE_UUID, WRITE_CHAR_UUID, NOTIFY_CHAR_UUID
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Настройка сенсоров весов"""
-    mac = entry.data["mac_address"]
-    async_add_entities([BeurerScaleSensor(mac)])
+    """Настройка сенсоров."""
+    # Получение данных из hass.data
+    device_data = hass.data[DOMAIN][entry.entry_id]
+    address = device_data["address"]
+    ble_device = device_data["device"]
+    
+    # Создание сенсоров
+    async_add_entities([
+        BeurerWeightSensor(ble_device, address),
+        BeurerBodyFatSensor(ble_device, address),
+        # и т.д.
+    ])
+
 
 class BeurerScaleSensor(SensorEntity):
     def __init__(self, mac):
