@@ -130,30 +130,46 @@ class BeurerCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """Обновление данных."""
         try:
-            _LOGGER.debug("🔍 Сканирование устройств...")
-            devices = await BleakScanner.discover(timeout=2.0, return_adv=True)
+            from homeassistant.components import bluetooth
             
-            for device, adv_data in devices.values():
-                if device.address.upper() == self._address.upper():
-                    service_count = len(adv_data.service_uuids) if adv_data.service_uuids else 0
-                    _LOGGER.debug("Найдено: %s (сервисов: %d)", device.name, service_count)
+            _LOGGER.debug("🔍 Сканирование через HA Bluetooth...")
+            
+            service_infos = bluetooth.async_discovered_service_info(self.hass, connectable=False)
+            
+            for service_info in service_infos:
+                if service_info.address.upper() == self._address.upper():
+                    service_count = len(service_info.service_uuids) if service_info.service_uuids else 0
+                    _LOGGER.debug("Найдено: %s (сервисов: %d)", service_info.name, service_count)
                     
-                    if service_count >= 8:
+                    if service_count >= 14:
                         _LOGGER.warning("🔵 ВЕСЫ АКТИВНЫ! Сервисов: %d", service_count)
-                        return await self._connect_and_read(device.address)
+                        
+                        ble_device = bluetooth.async_ble_device_from_address(
+                            self.hass, service_info.address, connectable=True
+                        )
+                        
+                        if ble_device:
+                            return await self._connect_and_read(ble_device)
+                        else:
+                            _LOGGER.warning("⚠️ Не удалось получить BLE device")
             
         except Exception as err:
             _LOGGER.debug("Ошибка сканирования: %s", err)
         
         return self._measurement_data
 
-    async def _connect_and_read(self, address: str) -> dict:
+    async def _connect_and_read(self, ble_device) -> dict:
         """Подключение и чтение данных."""
         try:
             _LOGGER.warning("🟢 ПОДКЛЮЧАЕМСЯ К ВЕСАМ...")
             
-            async with BleakClient(address, timeout=15.0) as client:
+            async with BleakClient(ble_device, timeout=15.0) as client:
                 _LOGGER.warning("✅ ПОДКЛЮЧЕНО!")
+                
+                for service in client.services:
+                    _LOGGER.info("Сервис: %s", service.uuid)
+                    for char in service.characteristics:
+                        _LOGGER.info("  Характеристика: %s", char.uuid)
                 
                 await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
                 
@@ -174,9 +190,9 @@ class BeurerCoordinator(DataUpdateCoordinator):
                     _LOGGER.error("❌ Данные не получены!")
                     
         except BleakError as err:
-            _LOGGER.error("Ошибка подключения: %s", err)
+            _LOGGER.error("Ошибка Bleak: %s", err)
         except Exception as err:
-            _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
+            _LOGGER.error("Ошибка: %s", err, exc_info=True)
         
         return self._measurement_data
 
@@ -200,7 +216,6 @@ class BeurerCoordinator(DataUpdateCoordinator):
         }
         
         _LOGGER.warning("📊 Данные: %s", self._measurement_data)
-
 
 class BeurerSensor(CoordinatorEntity, SensorEntity):
     """Сенсор Beurer."""
