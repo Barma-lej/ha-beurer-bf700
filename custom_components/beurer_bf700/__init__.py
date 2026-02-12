@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.components import bluetooth
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -25,9 +24,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     address = entry.data[CONF_MAC]
     
     _LOGGER.info("Настройка Beurer BF 700 с адресом %s", address)
-    
-    # НЕ проверяем доступность устройства здесь!
-    # Весы с connectable=False будут доступны только при взвешивании
     
     # Сохранение данных устройства
     hass.data.setdefault(DOMAIN, {})
