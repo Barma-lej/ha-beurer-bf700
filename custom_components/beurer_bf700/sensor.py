@@ -153,18 +153,17 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
                 if info.address.upper() == self._address.upper():
                     service_info = info
                     break
-
+    
             if not service_info:
                 return self._measurement_data
-
+    
             if not service_info.connectable:
                 return self._measurement_data
-
+    
             _LOGGER.warning("🔵 Устройство ПОДКЛЮЧАЕМО! Начинаем подключение к %s", self._address)
-
+    
             ble_device = service_info.device
-
-            # ⚡ Увеличиваем timeout до 20 секунд для надёжности
+    
             async with BleakClient(ble_device, timeout=20.0) as client:
                 _LOGGER.warning("🟢 УСПЕШНО ПОДКЛЮЧЕНО к весам!")
                 
@@ -175,23 +174,34 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
                     for char in service.characteristics:
                         _LOGGER.info("    Характеристика: %s (properties: %s)", 
                                    char.uuid, char.properties)
-
+    
                 # Подписка на уведомления
                 _LOGGER.info("Подписка на уведомления: %s", NOTIFY_CHAR_UUID)
                 await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
-
-                # Отправка команды синхронизации
-                _LOGGER.warning("📤 Отправка команды синхронизации...")
+    
+                # ⚡ ШАГ 1: Отправка команды ИНИЦИАЛИЗАЦИИ (обязательно!)
+                _LOGGER.warning("📤 Шаг 1/2: Отправка команды ИНИЦИАЛИЗАЦИИ (0xF6)...")
+                await client.write_gatt_char(
+                    WRITE_CHAR_UUID,
+                    bytearray([CMD_INIT, 0x00]),
+                    response=False,
+                )
+                
+                # Небольшая пауза между командами
+                await asyncio.sleep(0.5)
+    
+                # ⚡ ШАГ 2: Отправка команды СИНХРОНИЗАЦИИ
+                _LOGGER.warning("📤 Шаг 2/2: Отправка команды СИНХРОНИЗАЦИИ (0xF9)...")
                 await client.write_gatt_char(
                     WRITE_CHAR_UUID,
                     bytearray([CMD_SYNC, 0x00]),
                     response=False,
                 )
-
-                # ⚡ Ждём 5 секунд (весы отправляют данные быстро)
-                _LOGGER.info("Ожидание данных 5 секунд...")
-                await asyncio.sleep(5)
-
+    
+                # Ожидание данных
+                _LOGGER.info("Ожидание данных 8 секунд...")
+                await asyncio.sleep(8)
+    
                 await client.stop_notify(NOTIFY_CHAR_UUID)
                 _LOGGER.info("Отключение от весов")
                 
@@ -199,15 +209,15 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
                 if self._measurement_data:
                     _LOGGER.warning("✅ Данные получены: %s", self._measurement_data)
                 else:
-                    _LOGGER.error("❌ Данные НЕ получены за 5 секунд!")
-
+                    _LOGGER.error("❌ Данные НЕ получены за 8 секунд!")
+    
         except BleakError as err:
             _LOGGER.debug("Ошибка Bleak: %s", err)
         except TimeoutError:
             _LOGGER.debug("Таймаут подключения")
         except Exception as err:
             _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
-
+    
         return self._measurement_data
 
     @callback
