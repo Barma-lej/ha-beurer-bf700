@@ -110,10 +110,13 @@ async def async_setup_entry(
     # Создание координатора
     coordinator = BeurerDataUpdateCoordinator(hass, address)
 
-    # Первичное обновление данных
+    # Запуск мониторинга Bluetooth
+    await coordinator.async_start()
+
+    # Первичное обновление
     await coordinator.async_config_entry_first_refresh()
 
-    # Сохранить в hass.data для button
+    # Сохранить в hass.data
     hass.data[DOMAIN][entry.entry_id]["coordinator"] = coordinator
 
     # Создание всех сенсоров
@@ -137,115 +140,61 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=f"Beurer BF 700 {address}",
-            update_interval=timedelta(seconds=5),  # ⚡ Проверяем каждые 5 секунд
+            update_interval=timedelta(seconds=5),
         )
+        
+        # Подписка на события Bluetooth
+        self._unsubscribe = None
 
-    async def _async_update_data(self) -> dict:
-        """Получение данных с весов."""
-        try:
-            # Поиск устройства
-            service_infos = bluetooth.async_discovered_service_info(
-                self.hass, connectable=False
-            )
-            
-            service_info = None
-            for info in service_infos:
-                if info.address.upper() == self._address.upper():
-                    service_info = info
-                    break
-    
-            if not service_info:
-                return self._measurement_data
-    
-            if not service_info.connectable:
-                return self._measurement_data
-    
-            _LOGGER.warning("🔵 Устройство ПОДКЛЮЧАЕМО! Начинаем подключение к %s", self._address)
-    
-            ble_device = service_info.device
-    
-            async with BleakClient(ble_device, timeout=20.0) as client:
-                _LOGGER.warning("🟢 УСПЕШНО ПОДКЛЮЧЕНО к весам!")
-                
-                # Вывести все доступные сервисы
-                _LOGGER.info("Доступные сервисы:")
-                for service in client.services:
-                    _LOGGER.info("  Сервис: %s", service.uuid)
-                    for char in service.characteristics:
-                        _LOGGER.info("    Характеристика: %s (properties: %s)", 
-                                   char.uuid, char.properties)
-    
-                # Подписка на уведомления
-                _LOGGER.info("Подписка на уведомления: %s", NOTIFY_CHAR_UUID)
-                await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
-    
-                # ⚡ ШАГ 1: Отправка команды ИНИЦИАЛИЗАЦИИ (обязательно!)
-                _LOGGER.warning("📤 Шаг 1/2: Отправка команды ИНИЦИАЛИЗАЦИИ (0xF6)...")
-                await client.write_gatt_char(
-                    WRITE_CHAR_UUID,
-                    bytearray([CMD_INIT, 0x00]),
-                    response=False,
-                )
-                
-                # Небольшая пауза между командами
-                await asyncio.sleep(0.5)
-    
-                # ⚡ ШАГ 2: Отправка команды СИНХРОНИЗАЦИИ
-                _LOGGER.warning("📤 Шаг 2/2: Отправка команды СИНХРОНИЗАЦИИ (0xF9)...")
-                await client.write_gatt_char(
-                    WRITE_CHAR_UUID,
-                    bytearray([CMD_SYNC, 0x00]),
-                    response=False,
-                )
-    
-                # Ожидание данных
-                _LOGGER.info("Ожидание данных 8 секунд...")
-                await asyncio.sleep(8)
-    
-                await client.stop_notify(NOTIFY_CHAR_UUID)
-                _LOGGER.info("Отключение от весов")
-                
-                # Проверка полученных данных
-                if self._measurement_data:
-                    _LOGGER.warning("✅ Данные получены: %s", self._measurement_data)
-                else:
-                    _LOGGER.error("❌ Данные НЕ получены за 8 секунд!")
-    
-        except BleakError as err:
-            _LOGGER.debug("Ошибка Bleak: %s", err)
-        except TimeoutError:
-            _LOGGER.debug("Таймаут подключения")
-        except Exception as err:
-            _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
-    
-        return self._measurement_data
+    async def async_start(self) -> None:
+        """Запуск мониторинга Bluetooth."""
+        self._unsubscribe = bluetooth.async_register_callback(
+            self.hass,
+            self._handle_bluetooth_event,
+            bluetooth.BluetoothCallbackMatcher(address=self._address),
+            bluetooth.BluetoothScanningMode.PASSIVE,
+        )
+        _LOGGER.info("✅ Подписка на Bluetooth-события для %s", self._address)
+
+    async def async_stop(self) -> None:
+        """Остановка мониторинга."""
+        if self._unsubscribe:
+            self._unsubscribe()
 
     @callback
-    def _notification_handler(self, sender: int, data: bytearray) -> None:
-        """Обработка уведомлений от весов."""
-        _LOGGER.warning("📨 ПОЛУЧЕНО УВЕДОМЛЕНИЕ! Sender: %s, Length: %d, Data: %s", 
-                       sender, len(data), data.hex())
+    def _handle_bluetooth_event(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        change: bluetooth.BluetoothChange,
+    ) -> None:
+        """Обработка Bluetooth-события."""
+        _LOGGER.warning("📡 ПОЛУЧЕНО BLUETOOTH-СОБЫТИЕ от весов!")
+        _LOGGER.info("Service data: %s", service_info.service_data)
+        _LOGGER.info("Manufacturer data: %s", service_info.manufacturer_data)
         
-        if len(data) < 20:
-            _LOGGER.warning("⚠️ Пакет слишком короткий: %d байт", len(data))
-            return
+        # Парсинг данных из service_data
+        for uuid, data in service_info.service_data.items():
+            _LOGGER.info("UUID: %s, Data: %s (hex: %s)", uuid, data, data.hex())
             
-        if data[0] != 0xF7:
-            _LOGGER.warning("⚠️ Неправильный заголовок: 0x%02X", data[0])
-            return
+            # Пробуем декодировать
+            if len(data) >= 2:
+                self._parse_advertisement_data(data)
 
-        _LOGGER.warning("🟢 ПОЛУЧЕНЫ КОРРЕКТНЫЕ ДАННЫЕ ОТ ВЕСОВ!")
+    def _parse_advertisement_data(self, data: bytes) -> None:
+        """Парсинг данных из advertisement."""
+        _LOGGER.warning("🔍 Парсинг данных: %s (length: %d)", data.hex(), len(data))
+        
+        # Простой парсинг (нужно уточнить формат)
+        # Пока просто логируем все байты
+        for i, byte in enumerate(data):
+            _LOGGER.info("  Byte %d: 0x%02X (%d)", i, byte, byte)
+        
+        # TODO: Раскодировать реальные значения
+        # Нужно проанализировать, как данные упакованы в advertisement
 
-        # Декодирование данных
-        self._measurement_data = {
-            "weight": int.from_bytes(data[2:4], "little") / 100,
-            "body_fat": data[4] / 10 if data[4] != 0xFF else None,
-            "body_water": data[5] / 10 if data[5] != 0xFF else None,
-            "muscle_mass": data[6] / 10 if data[6] != 0xFF else None,
-            "bone_mass": data[7] / 10 if data[7] != 0xFF else None,
-        }
-
-        _LOGGER.warning("📊 Декодированные данные: %s", self._measurement_data)
+    async def _async_update_data(self) -> dict:
+        """Обновление данных (пустое, данные приходят через события)."""
+        return self._measurement_data
 
 class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """Сенсор для весов Beurer BF 700."""
