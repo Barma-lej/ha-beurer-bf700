@@ -19,7 +19,10 @@ from homeassistant.const import PERCENTAGE, UnitOfMass
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+    DataUpdateCoordinator,
+)
 
 from .const import (
     DOMAIN,
@@ -119,7 +122,7 @@ class BeurerCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=f"Beurer BF 700 {address}",
-            update_interval=timedelta(seconds=3),  # ⚡ Проверяем каждые 3 секунды!
+            update_interval=timedelta(seconds=3),
         )
         self._address = address
         self._measurement_data: dict[str, float | None] = {}
@@ -127,23 +130,17 @@ class BeurerCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """Обновление данных."""
         try:
-            # ⚡ Прямое сканирование через Bleak (обходим кэш HA)
-            _LOGGER.debug("Сканирование устройств...")
+            _LOGGER.debug("🔍 Сканирование устройств...")
             devices = await BleakScanner.discover(timeout=2.0, return_adv=True)
             
             for device, adv_data in devices.values():
                 if device.address.upper() == self._address.upper():
-                    _LOGGER.debug("Найдено устройство: %s", device.name)
-                    
-                    # Проверяем, можно ли подключиться
-                    # Если в advertisement есть много сервисов = весы активны
                     service_count = len(adv_data.service_uuids) if adv_data.service_uuids else 0
+                    _LOGGER.debug("Найдено: %s (сервисов: %d)", device.name, service_count)
                     
-                    if service_count >= 8:  # Когда весы активны, они показывают 8+ сервисов
+                    if service_count >= 8:
                         _LOGGER.warning("🔵 ВЕСЫ АКТИВНЫ! Сервисов: %d", service_count)
                         return await self._connect_and_read(device.address)
-                    else:
-                        _LOGGER.debug("Весы неактивны (сервисов: %d)", service_count)
             
         except Exception as err:
             _LOGGER.debug("Ошибка сканирования: %s", err)
@@ -158,19 +155,15 @@ class BeurerCoordinator(DataUpdateCoordinator):
             async with BleakClient(address, timeout=15.0) as client:
                 _LOGGER.warning("✅ ПОДКЛЮЧЕНО!")
                 
-                # Подписка на уведомления
                 await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
                 
-                # Инициализация
                 _LOGGER.info("📤 Команда INIT...")
                 await client.write_gatt_char(WRITE_CHAR_UUID, bytearray([CMD_INIT, 0x00]), response=False)
                 await asyncio.sleep(0.5)
                 
-                # Синхронизация
                 _LOGGER.info("📤 Команда SYNC...")
                 await client.write_gatt_char(WRITE_CHAR_UUID, bytearray([CMD_SYNC, 0x00]), response=False)
                 
-                # Ждём данные
                 await asyncio.sleep(8)
                 
                 await client.stop_notify(NOTIFY_CHAR_UUID)
@@ -209,7 +202,7 @@ class BeurerCoordinator(DataUpdateCoordinator):
         _LOGGER.warning("📊 Данные: %s", self._measurement_data)
 
 
-class BeurerSensor(SensorEntity):
+class BeurerSensor(CoordinatorEntity, SensorEntity):
     """Сенсор Beurer."""
 
     _attr_has_entity_name = True
@@ -221,7 +214,7 @@ class BeurerSensor(SensorEntity):
         address: str,
     ) -> None:
         """Инициализация."""
-        self.coordinator = coordinator
+        super().__init__(coordinator)
         self.entity_description = description
         self._address = address
         self._attr_unique_id = f"{address}_{description.key}"
@@ -242,13 +235,3 @@ class BeurerSensor(SensorEntity):
         if not self.coordinator.data:
             return None
         return self.coordinator.data.get(self.entity_description.data_key)
-
-    async def async_added_to_hass(self) -> None:
-        """Подписка на обновления координатора."""
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-    async def async_update(self) -> None:
-        """Обновление."""
-        await self.coordinator.async_request_refresh()
