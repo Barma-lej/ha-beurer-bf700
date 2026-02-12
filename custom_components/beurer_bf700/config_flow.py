@@ -10,7 +10,7 @@ from homeassistant import config_entries
 from homeassistant.components import bluetooth
 from homeassistant.data_entry_flow import FlowResult
 
-from .const import DOMAIN, CONF_MAC, DEVICE_NAME
+from .const import DOMAIN, CONF_MAC
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ class BeurerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         self.context["title_placeholders"] = {"name": discovery_info.name}
         
-        # Сохранить информацию для следующего шага
         self._discovered_device = discovery_info
         
         return await self.async_step_confirm()
@@ -61,7 +60,6 @@ class BeurerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            # Создание config entry
             await self.async_set_unique_id(user_input[CONF_MAC])
             self._abort_if_unique_id_configured()
             
@@ -70,9 +68,9 @@ class BeurerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 data=user_input,
             )
 
-        # Поиск ВСЕХ Beurer-устройств (включая неподключаемые)
+        # Поиск ВСЕХ Beurer-устройств
         discovered_devices = bluetooth.async_discovered_service_info(
-            self.hass, connectable=False  # Важно: ищем все устройства
+            self.hass, connectable=False
         )
         
         beurer_devices = [
@@ -86,7 +84,6 @@ class BeurerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not beurer_devices:
             return self.async_abort(reason="no_devices_found")
 
-        # Формирование списка устройств с предупреждением о статусе
         devices_dict = {
             device.address: (
                 f"{device.name} ({device.address}) "
