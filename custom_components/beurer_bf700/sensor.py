@@ -35,7 +35,7 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-SCAN_INTERVAL = timedelta(seconds=30)
+SCAN_INTERVAL = timedelta(seconds=5)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -137,11 +137,11 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=f"Beurer BF 700 {address}",
-            update_interval=SCAN_INTERVAL,
+            update_interval=timedelta(seconds=5),  # ⚡ Проверяем каждые 5 секунд
         )
 
     async def _async_update_data(self) -> dict:
-        """Получение данных с весов - ВАЖНО: название метода с подчёркиванием!"""
+        """Получение данных с весов."""
         try:
             # Поиск устройства
             service_infos = bluetooth.async_discovered_service_info(
@@ -155,24 +155,20 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
                     break
 
             if not service_info:
-                _LOGGER.debug("Устройство %s не обнаружено", self._address)
                 return self._measurement_data
 
             if not service_info.connectable:
-                _LOGGER.debug(
-                    "Устройство %s не в режиме подключения",
-                    self._address
-                )
                 return self._measurement_data
 
             _LOGGER.warning("🔵 Устройство ПОДКЛЮЧАЕМО! Начинаем подключение к %s", self._address)
 
             ble_device = service_info.device
 
-            async with BleakClient(ble_device, timeout=15.0) as client:
+            # ⚡ Увеличиваем timeout до 20 секунд для надёжности
+            async with BleakClient(ble_device, timeout=20.0) as client:
                 _LOGGER.warning("🟢 УСПЕШНО ПОДКЛЮЧЕНО к весам!")
                 
-                # Вывести все доступные сервисы и характеристики
+                # Вывести все доступные сервисы
                 _LOGGER.info("Доступные сервисы:")
                 for service in client.services:
                     _LOGGER.info("  Сервис: %s", service.uuid)
@@ -192,23 +188,23 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
                     response=False,
                 )
 
-                # Ожидание данных
-                _LOGGER.info("Ожидание данных 10 секунд...")
-                await asyncio.sleep(10)
+                # ⚡ Ждём 5 секунд (весы отправляют данные быстро)
+                _LOGGER.info("Ожидание данных 5 секунд...")
+                await asyncio.sleep(5)
 
                 await client.stop_notify(NOTIFY_CHAR_UUID)
                 _LOGGER.info("Отключение от весов")
                 
-                # Проверим, получили ли мы данные
+                # Проверка полученных данных
                 if self._measurement_data:
                     _LOGGER.warning("✅ Данные получены: %s", self._measurement_data)
                 else:
-                    _LOGGER.error("❌ Данные НЕ получены за 10 секунд!")
+                    _LOGGER.error("❌ Данные НЕ получены за 5 секунд!")
 
         except BleakError as err:
-            _LOGGER.error("Ошибка Bleak: %s", err)
+            _LOGGER.debug("Ошибка Bleak: %s", err)
         except TimeoutError:
-            _LOGGER.error("Таймаут подключения к весам")
+            _LOGGER.debug("Таймаут подключения")
         except Exception as err:
             _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
 
@@ -240,7 +236,6 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
         }
 
         _LOGGER.warning("📊 Декодированные данные: %s", self._measurement_data)
-
 
 class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """Сенсор для весов Beurer BF 700."""
