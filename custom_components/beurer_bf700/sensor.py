@@ -138,38 +138,43 @@ class BeurerDataCoordinator:
     async def async_update(self) -> None:
         """Попытка получить данные с весов."""
         try:
-            ble_device = bluetooth.async_ble_device_from_address(
+            # Получаем BluetoothServiceInfoBleak вместо BLEDevice
+            service_info = bluetooth.async_last_service_info(
                 self.hass, self._address, connectable=False
             )
-
-            if not ble_device:
+    
+            if not service_info:
                 _LOGGER.debug("Устройство %s не обнаружено", self._address)
                 return
-
-            if not ble_device.connectable:
+    
+            # Проверяем connectable через service_info
+            if not service_info.connectable:
                 _LOGGER.debug("Устройство %s не в режиме подключения", self._address)
                 return
-
+    
             _LOGGER.info("Попытка подключения к %s", self._address)
-
+    
+            # Получаем BLEDevice для подключения
+            ble_device = service_info.device
+    
             async with BleakClient(ble_device, timeout=10.0) as client:
                 _LOGGER.info("Подключено к весам!")
-
+    
                 await client.start_notify(
                     NOTIFY_CHAR_UUID, self._notification_handler
                 )
-
+    
                 await client.write_gatt_char(
                     WRITE_CHAR_UUID,
                     bytearray([CMD_SYNC, 0x00]),
                     response=False,
                 )
-
+    
                 import asyncio
                 await asyncio.sleep(5)
-
+    
                 await client.stop_notify(NOTIFY_CHAR_UUID)
-
+    
         except BleakError as err:
             _LOGGER.debug("Весы недоступны: %s", err)
         except TimeoutError:
