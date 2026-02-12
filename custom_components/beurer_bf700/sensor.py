@@ -135,52 +135,67 @@ class BeurerDataCoordinator:
         for listener in self._listeners:
             listener()
 
-    async def async_update(self) -> None:
-        """Попытка получить данные с весов."""
-        try:
-            # Получаем BluetoothServiceInfoBleak вместо BLEDevice
-            service_info = bluetooth.async_last_service_info(
-                self.hass, self._address, connectable=False
+async def async_update(self) -> None:
+    """Попытка получить данные с весов."""
+    try:
+        # Получаем все обнаруженные устройства
+        service_infos = bluetooth.async_discovered_service_info(
+            self.hass, connectable=False
+        )
+        
+        # Ищем наше устройство
+        service_info = None
+        for info in service_infos:
+            if info.address.upper() == self._address.upper():
+                service_info = info
+                break
+
+        if not service_info:
+            _LOGGER.debug("Устройство %s не обнаружено", self._address)
+            return
+
+        # Проверяем, подключаемо ли устройство
+        if not service_info.connectable:
+            _LOGGER.debug(
+                "Устройство %s не в режиме подключения (встаньте на весы)",
+                self._address
             )
-    
-            if not service_info:
-                _LOGGER.debug("Устройство %s не обнаружено", self._address)
-                return
-    
-            # Проверяем connectable через service_info
-            if not service_info.connectable:
-                _LOGGER.debug("Устройство %s не в режиме подключения", self._address)
-                return
-    
-            _LOGGER.info("Попытка подключения к %s", self._address)
-    
-            # Получаем BLEDevice для подключения
-            ble_device = service_info.device
-    
-            async with BleakClient(ble_device, timeout=10.0) as client:
-                _LOGGER.info("Подключено к весам!")
-    
-                await client.start_notify(
-                    NOTIFY_CHAR_UUID, self._notification_handler
-                )
-    
-                await client.write_gatt_char(
-                    WRITE_CHAR_UUID,
-                    bytearray([CMD_SYNC, 0x00]),
-                    response=False,
-                )
-    
-                import asyncio
-                await asyncio.sleep(5)
-    
-                await client.stop_notify(NOTIFY_CHAR_UUID)
-    
-        except BleakError as err:
-            _LOGGER.debug("Весы недоступны: %s", err)
-        except TimeoutError:
-            _LOGGER.debug("Таймаут подключения")
-        except Exception as err:
-            _LOGGER.error("Ошибка обновления: %s", err, exc_info=True)
+            return
+
+        _LOGGER.info("Устройство подключаемо, начинаем подключение к %s", self._address)
+
+        # Получаем BLEDevice из service_info
+        ble_device = service_info.device
+
+        async with BleakClient(ble_device, timeout=15.0) as client:
+            _LOGGER.info("✓ Успешно подключено к весам!")
+
+            # Подписка на уведомления
+            await client.start_notify(
+                NOTIFY_CHAR_UUID, self._notification_handler
+            )
+
+            # Отправка команды синхронизации
+            _LOGGER.debug("Отправка команды синхронизации...")
+            await client.write_gatt_char(
+                WRITE_CHAR_UUID,
+                bytearray([CMD_SYNC, 0x00]),
+                response=False,
+            )
+
+            # Ожидание данных (5 секунд)
+            import asyncio
+            await asyncio.sleep(5)
+
+            await client.stop_notify(NOTIFY_CHAR_UUID)
+            _LOGGER.debug("Отключение от весов")
+
+    except BleakError as err:
+        _LOGGER.debug("Весы недоступны для подключения: %s", err)
+    except TimeoutError:
+        _LOGGER.debug("Таймаут подключения к весам")
+    except Exception as err:
+        _LOGGER.error("Неожиданная ошибка обновления: %s", err, exc_info=True)
 
     @callback
     def _notification_handler(self, sender: int, data: bytearray) -> None:
