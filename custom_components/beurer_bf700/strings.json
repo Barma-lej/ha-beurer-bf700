@@ -1,4 +1,23 @@
 {
+  "entity": {
+    "sensor": {
+      "weight": {
+        "name": "Вес"
+      },
+      "body_fat": {
+        "name": "Процент жира"
+      },
+      "body_water": {
+        "name": "Процент воды"
+      },
+      "muscle_mass": {
+        "name": "Мышечная масса"
+      },
+      "bone_mass": {
+        "name": "Костная масса"
+      }
+    }
+  },
   "config": {
     "step": {
       "user": {
@@ -12,10 +31,6 @@
         "title": "Подтвердите добавление",
         "description": "Обнаружены весы:\n**{name}**\nMAC: {address}\n\nДобавить это устройство?"
       }
-    },
-    "error": {
-      "cannot_connect": "Не удалось подключиться. Встаньте на весы для активации.",
-      "unknown": "Неизвестная ошибка"
     },
     "abort": {
       "already_configured": "Это устройство уже добавлено",
