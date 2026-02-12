@@ -110,6 +110,9 @@ async def async_setup_entry(
     # Создание координатора
     coordinator = BeurerDataUpdateCoordinator(hass, address)
 
+    # Первичное обновление данных
+    await coordinator.async_config_entry_first_refresh()
+
     # Сохранить в hass.data для button
     hass.data[DOMAIN][entry.entry_id]["coordinator"] = coordinator
 
@@ -119,7 +122,7 @@ async def async_setup_entry(
         for description in SENSOR_TYPES
     ]
 
-    async_add_entities(entities, update_before_add=False)
+    async_add_entities(entities)
 
 
 class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
@@ -136,111 +139,107 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
             name=f"Beurer BF 700 {address}",
             update_interval=SCAN_INTERVAL,
         )
-        
-        # Устанавливаем начальное значение data
-        self.data = {}
 
-async def _async_update_data(self):
-    """Получение данных с весов."""
-    try:
-        # Поиск устройства
-        service_infos = bluetooth.async_discovered_service_info(
-            self.hass, connectable=False
-        )
-        
-        service_info = None
-        for info in service_infos:
-            if info.address.upper() == self._address.upper():
-                service_info = info
-                break
-
-        if not service_info:
-            _LOGGER.debug("Устройство %s не обнаружено", self._address)
-            return self.data or {}
-
-        if not service_info.connectable:
-            _LOGGER.debug(
-                "Устройство %s не в режиме подключения (connectable=%s)",
-                self._address,
-                service_info.connectable,
+    async def _async_update_data(self) -> dict:
+        """Получение данных с весов - ВАЖНО: название метода с подчёркиванием!"""
+        try:
+            # Поиск устройства
+            service_infos = bluetooth.async_discovered_service_info(
+                self.hass, connectable=False
             )
-            return self.data or {}
-
-        _LOGGER.warning("🔵 Устройство ПОДКЛЮЧАЕМО! Начинаем подключение к %s", self._address)
-
-        ble_device = service_info.device
-
-        async with BleakClient(ble_device, timeout=15.0) as client:
-            _LOGGER.warning("🟢 УСПЕШНО ПОДКЛЮЧЕНО к весам!")
             
-            # Вывести все доступные сервисы и характеристики
-            _LOGGER.info("Доступные сервисы:")
-            for service in client.services:
-                _LOGGER.info("  Сервис: %s", service.uuid)
-                for char in service.characteristics:
-                    _LOGGER.info("    Характеристика: %s (properties: %s)", 
-                               char.uuid, char.properties)
+            service_info = None
+            for info in service_infos:
+                if info.address.upper() == self._address.upper():
+                    service_info = info
+                    break
 
-            # Подписка на уведомления
-            _LOGGER.info("Подписка на уведомления: %s", NOTIFY_CHAR_UUID)
-            await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
+            if not service_info:
+                _LOGGER.debug("Устройство %s не обнаружено", self._address)
+                return self._measurement_data
 
-            # Отправка команды синхронизации
-            _LOGGER.warning("📤 Отправка команды синхронизации...")
-            await client.write_gatt_char(
-                WRITE_CHAR_UUID,
-                bytearray([CMD_SYNC, 0x00]),
-                response=False,
-            )
+            if not service_info.connectable:
+                _LOGGER.debug(
+                    "Устройство %s не в режиме подключения",
+                    self._address
+                )
+                return self._measurement_data
 
-            # Ожидание данных (увеличим до 10 секунд)
-            _LOGGER.info("Ожидание данных 10 секунд...")
-            await asyncio.sleep(10)
+            _LOGGER.warning("🔵 Устройство ПОДКЛЮЧАЕМО! Начинаем подключение к %s", self._address)
 
-            await client.stop_notify(NOTIFY_CHAR_UUID)
-            _LOGGER.info("Отключение от весов")
-            
-            # Проверим, получили ли мы данные
-            if self._measurement_data:
-                _LOGGER.warning("✅ Данные получены: %s", self._measurement_data)
-            else:
-                _LOGGER.error("❌ Данные НЕ получены за 10 секунд!")
+            ble_device = service_info.device
 
-    except BleakError as err:
-        _LOGGER.error("Ошибка Bleak: %s", err)
-    except TimeoutError:
-        _LOGGER.error("Таймаут подключения к весам")
-    except Exception as err:
-        _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
+            async with BleakClient(ble_device, timeout=15.0) as client:
+                _LOGGER.warning("🟢 УСПЕШНО ПОДКЛЮЧЕНО к весам!")
+                
+                # Вывести все доступные сервисы и характеристики
+                _LOGGER.info("Доступные сервисы:")
+                for service in client.services:
+                    _LOGGER.info("  Сервис: %s", service.uuid)
+                    for char in service.characteristics:
+                        _LOGGER.info("    Характеристика: %s (properties: %s)", 
+                                   char.uuid, char.properties)
 
-    return self._measurement_data or {}
+                # Подписка на уведомления
+                _LOGGER.info("Подписка на уведомления: %s", NOTIFY_CHAR_UUID)
+                await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
 
-@callback
-def _notification_handler(self, sender: int, data: bytearray) -> None:
-    """Обработка уведомлений от весов."""
-    _LOGGER.warning("📨 ПОЛУЧЕНО УВЕДОМЛЕНИЕ! Sender: %s, Length: %d, Data: %s", 
-                   sender, len(data), data.hex())
-    
-    if len(data) < 20:
-        _LOGGER.warning("⚠️ Пакет слишком короткий: %d байт (ожидалось минимум 20)", len(data))
-        return
+                # Отправка команды синхронизации
+                _LOGGER.warning("📤 Отправка команды синхронизации...")
+                await client.write_gatt_char(
+                    WRITE_CHAR_UUID,
+                    bytearray([CMD_SYNC, 0x00]),
+                    response=False,
+                )
+
+                # Ожидание данных
+                _LOGGER.info("Ожидание данных 10 секунд...")
+                await asyncio.sleep(10)
+
+                await client.stop_notify(NOTIFY_CHAR_UUID)
+                _LOGGER.info("Отключение от весов")
+                
+                # Проверим, получили ли мы данные
+                if self._measurement_data:
+                    _LOGGER.warning("✅ Данные получены: %s", self._measurement_data)
+                else:
+                    _LOGGER.error("❌ Данные НЕ получены за 10 секунд!")
+
+        except BleakError as err:
+            _LOGGER.error("Ошибка Bleak: %s", err)
+        except TimeoutError:
+            _LOGGER.error("Таймаут подключения к весам")
+        except Exception as err:
+            _LOGGER.error("Неожиданная ошибка: %s", err, exc_info=True)
+
+        return self._measurement_data
+
+    @callback
+    def _notification_handler(self, sender: int, data: bytearray) -> None:
+        """Обработка уведомлений от весов."""
+        _LOGGER.warning("📨 ПОЛУЧЕНО УВЕДОМЛЕНИЕ! Sender: %s, Length: %d, Data: %s", 
+                       sender, len(data), data.hex())
         
-    if data[0] != 0xF7:
-        _LOGGER.warning("⚠️ Неправильный заголовок пакета: 0x%02X (ожидалось 0xF7)", data[0])
-        return
+        if len(data) < 20:
+            _LOGGER.warning("⚠️ Пакет слишком короткий: %d байт", len(data))
+            return
+            
+        if data[0] != 0xF7:
+            _LOGGER.warning("⚠️ Неправильный заголовок: 0x%02X", data[0])
+            return
 
-    _LOGGER.warning("🟢 ПОЛУЧЕНЫ КОРРЕКТНЫЕ ДАННЫЕ ОТ ВЕСОВ!")
+        _LOGGER.warning("🟢 ПОЛУЧЕНЫ КОРРЕКТНЫЕ ДАННЫЕ ОТ ВЕСОВ!")
 
-    # Декодирование данных
-    self._measurement_data = {
-        "weight": int.from_bytes(data[2:4], "little") / 100,
-        "body_fat": data[4] / 10 if data[4] != 0xFF else None,
-        "body_water": data[5] / 10 if data[5] != 0xFF else None,
-        "muscle_mass": data[6] / 10 if data[6] != 0xFF else None,
-        "bone_mass": data[7] / 10 if data[7] != 0xFF else None,
-    }
+        # Декодирование данных
+        self._measurement_data = {
+            "weight": int.from_bytes(data[2:4], "little") / 100,
+            "body_fat": data[4] / 10 if data[4] != 0xFF else None,
+            "body_water": data[5] / 10 if data[5] != 0xFF else None,
+            "muscle_mass": data[6] / 10 if data[6] != 0xFF else None,
+            "bone_mass": data[7] / 10 if data[7] != 0xFF else None,
+        }
 
-    _LOGGER.warning("📊 Декодированные данные: %s", self._measurement_data)
+        _LOGGER.warning("📊 Декодированные данные: %s", self._measurement_data)
 
 
 class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
@@ -274,7 +273,7 @@ class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     @property
     def native_value(self):
         """Возвращает текущее значение сенсора."""
-        if self.coordinator.data is None:
+        if self.coordinator.data is None or not self.coordinator.data:
             return self._restored_value
         
         data_key = self.entity_description.data_key
