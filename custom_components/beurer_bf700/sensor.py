@@ -41,6 +41,8 @@ async def async_setup_entry(
     """Настройка сенсоров из config entry."""
     device_data = hass.data[DOMAIN][entry.entry_id]
     address = device_data["address"]
+    
+    _LOGGER.info("Создание сенсоров для Beurer BF 700 (%s)", address)
 
     async_add_entities(
         [
@@ -49,7 +51,8 @@ async def async_setup_entry(
             BeurerBodyWaterSensor(address, entry.entry_id),
             BeurerMuscleMassSensor(address, entry.entry_id),
             BeurerBoneMassSensor(address, entry.entry_id),
-        ]
+        ],
+        update_before_add=False,  # Не пытаться обновить до добавления
     )
 
 
@@ -107,38 +110,44 @@ class BeurerBaseSensor(RestoreEntity, SensorEntity):
     async def async_update(self) -> None:
         """Попытка получить данные с весов."""
         try:
+            # Поиск устройства БЕЗ требования connectable=True
             ble_device = bluetooth.async_ble_device_from_address(
-                self.hass, self._address, connectable=True
+                self.hass, self._address, connectable=False  # Важно!
             )
-
+    
             if not ble_device:
-                _LOGGER.debug("Устройство %s не в зоне действия", self._address)
+                _LOGGER.debug("Устройство %s не обнаружено", self._address)
                 return
-
-            # Попытка подключения
+    
+            # Проверка, стало ли устройство подключаемым
+            if not ble_device.connectable:
+                _LOGGER.debug("Устройство %s не в режиме подключения", self._address)
+                return
+    
+            _LOGGER.info("Попытка подключения к %s", self._address)
+    
             async with BleakClient(ble_device, timeout=10.0) as client:
-                _LOGGER.debug("Подключено к %s", self._address)
-
-                # Подписка на уведомления
+                _LOGGER.info("Подключено к весам!")
+    
                 await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
-
-                # Запрос данных
+    
                 await client.write_gatt_char(
                     WRITE_CHAR_UUID,
                     bytearray([CMD_SYNC, 0x00]),
                     response=False,
                 )
-
-                # Ожидание данных (5 секунд)
+    
                 import asyncio
                 await asyncio.sleep(5)
-
+    
                 await client.stop_notify(NOTIFY_CHAR_UUID)
-
+    
         except BleakError as err:
-            _LOGGER.debug("Не удалось подключиться к весам: %s", err)
+            _LOGGER.debug("Весы недоступны для подключения: %s", err)
+        except TimeoutError:
+            _LOGGER.debug("Таймаут подключения к весам")
         except Exception as err:
-            _LOGGER.error("Ошибка обновления: %s", err)
+            _LOGGER.error("Ошибка обновления сенсора: %s", err, exc_info=True)
 
     @callback
     def _notification_handler(self, sender: int, data: bytearray) -> None:
