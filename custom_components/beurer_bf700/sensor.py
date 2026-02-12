@@ -1,8 +1,9 @@
 """Сенсоры для весов Beurer BF 700."""
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from dataclasses import dataclass
 
 from bleak import BleakClient
@@ -20,10 +21,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.update_coordinator import (
+    CoordinatorEntity,
+    DataUpdateCoordinator,
+    UpdateFailed,
+)
 
 from .const import (
     DOMAIN,
-    CONF_MAC,
     WRITE_CHAR_UUID,
     NOTIFY_CHAR_UUID,
     CMD_SYNC,
@@ -38,7 +43,7 @@ SCAN_INTERVAL = timedelta(seconds=30)
 class BeurerSensorEntityDescription(SensorEntityDescription):
     """Описание сенсора Beurer с дополнительными полями."""
     
-    data_key: str  # Ключ в словаре measurement_data
+    data_key: str
 
 
 # Определения всех сенсоров
@@ -103,99 +108,89 @@ async def async_setup_entry(
 
     _LOGGER.info("Создание сенсоров для Beurer BF 700 (%s)", address)
 
-    # Создание координатора для управления обновлениями
-    coordinator = BeurerDataCoordinator(hass, address)
+    # Создание координатора
+    coordinator = BeurerDataUpdateCoordinator(hass, address)
+
+    # Сохранить в hass.data для button
+    hass.data[DOMAIN][entry.entry_id]["coordinator"] = coordinator
 
     # Создание всех сенсоров
     entities = [
-        BeurerSensor(coordinator, description, address, entry.entry_id)
+        BeurerSensor(coordinator, description, address)
         for description in SENSOR_TYPES
     ]
 
     async_add_entities(entities, update_before_add=False)
 
 
-class BeurerDataCoordinator:
-    """Координатор для управления обновлениями данных с весов."""
+class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
+    """Координатор обновлений для весов Beurer."""
 
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         """Инициализация координатора."""
-        self.hass = hass
-        self._address = address
-        self.data: dict[str, float | None] = {}
-        self.last_measurement_time: datetime | None = None
-        self._listeners: list = []
-
-    def register_listener(self, listener) -> None:
-        """Регистрация слушателя обновлений."""
-        self._listeners.append(listener)
-
-    def notify_listeners(self) -> None:
-        """Уведомление всех слушателей об обновлении."""
-        for listener in self._listeners:
-            listener()
-
-async def async_update(self) -> None:
-    """Попытка получить данные с весов."""
-    try:
-        # Получаем все обнаруженные устройства
-        service_infos = bluetooth.async_discovered_service_info(
-            self.hass, connectable=False
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"Beurer BF 700 {address}",
+            update_interval=SCAN_INTERVAL,
         )
-        
-        # Ищем наше устройство
-        service_info = None
-        for info in service_infos:
-            if info.address.upper() == self._address.upper():
-                service_info = info
-                break
+        self._address = address
+        self._measurement_data: dict[str, float | None] = {}
 
-        if not service_info:
-            _LOGGER.debug("Устройство %s не обнаружено", self._address)
-            return
-
-        # Проверяем, подключаемо ли устройство
-        if not service_info.connectable:
-            _LOGGER.debug(
-                "Устройство %s не в режиме подключения (встаньте на весы)",
-                self._address
+    async def _async_update_data(self):
+        """Получение данных с весов."""
+        try:
+            # Поиск устройства
+            service_infos = bluetooth.async_discovered_service_info(
+                self.hass, connectable=False
             )
-            return
+            
+            service_info = None
+            for info in service_infos:
+                if info.address.upper() == self._address.upper():
+                    service_info = info
+                    break
 
-        _LOGGER.info("Устройство подключаемо, начинаем подключение к %s", self._address)
+            if not service_info:
+                _LOGGER.debug("Устройство %s не обнаружено", self._address)
+                return self._measurement_data  # Возвращаем старые данные
 
-        # Получаем BLEDevice из service_info
-        ble_device = service_info.device
+            if not service_info.connectable:
+                _LOGGER.debug("Устройство %s не в режиме подключения", self._address)
+                return self._measurement_data
 
-        async with BleakClient(ble_device, timeout=15.0) as client:
-            _LOGGER.info("✓ Успешно подключено к весам!")
+            _LOGGER.info("Устройство подключаемо, начинаем подключение к %s", self._address)
 
-            # Подписка на уведомления
-            await client.start_notify(
-                NOTIFY_CHAR_UUID, self._notification_handler
-            )
+            ble_device = service_info.device
 
-            # Отправка команды синхронизации
-            _LOGGER.debug("Отправка команды синхронизации...")
-            await client.write_gatt_char(
-                WRITE_CHAR_UUID,
-                bytearray([CMD_SYNC, 0x00]),
-                response=False,
-            )
+            async with BleakClient(ble_device, timeout=15.0) as client:
+                _LOGGER.info("✓ Успешно подключено к весам!")
 
-            # Ожидание данных (5 секунд)
-            import asyncio
-            await asyncio.sleep(5)
+                # Подписка на уведомления
+                await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
 
-            await client.stop_notify(NOTIFY_CHAR_UUID)
-            _LOGGER.debug("Отключение от весов")
+                # Отправка команды синхронизации
+                _LOGGER.debug("Отправка команды синхронизации...")
+                await client.write_gatt_char(
+                    WRITE_CHAR_UUID,
+                    bytearray([CMD_SYNC, 0x00]),
+                    response=False,
+                )
 
-    except BleakError as err:
-        _LOGGER.debug("Весы недоступны для подключения: %s", err)
-    except TimeoutError:
-        _LOGGER.debug("Таймаут подключения к весам")
-    except Exception as err:
-        _LOGGER.error("Неожиданная ошибка обновления: %s", err, exc_info=True)
+                # Ожидание данных
+                await asyncio.sleep(5)
+
+                await client.stop_notify(NOTIFY_CHAR_UUID)
+                _LOGGER.debug("Отключение от весов")
+
+        except BleakError as err:
+            _LOGGER.debug("Весы недоступны для подключения: %s", err)
+        except TimeoutError:
+            _LOGGER.debug("Таймаут подключения к весам")
+        except Exception as err:
+            _LOGGER.error("Неожиданная ошибка обновления: %s", err, exc_info=True)
+
+        return self._measurement_data
 
     @callback
     def _notification_handler(self, sender: int, data: bytearray) -> None:
@@ -206,7 +201,7 @@ async def async_update(self) -> None:
         _LOGGER.info("Получены данные от весов: %s", data.hex())
 
         # Декодирование данных
-        self.data = {
+        self._measurement_data = {
             "weight": int.from_bytes(data[2:4], "little") / 100,
             "body_fat": data[4] / 10 if data[4] != 0xFF else None,
             "body_water": data[5] / 10 if data[5] != 0xFF else None,
@@ -214,33 +209,25 @@ async def async_update(self) -> None:
             "bone_mass": data[7] / 10 if data[7] != 0xFF else None,
         }
 
-        self.last_measurement_time = datetime.now()
-        _LOGGER.info("Декодированные данные: %s", self.data)
-        
-        self.notify_listeners()
+        _LOGGER.info("Декодированные данные: %s", self._measurement_data)
 
 
-class BeurerSensor(RestoreEntity, SensorEntity):
+class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     """Сенсор для весов Beurer BF 700."""
 
-    _attr_should_poll = True
     _attr_has_entity_name = True
 
     def __init__(
         self,
-        coordinator: BeurerDataCoordinator,
+        coordinator: BeurerDataUpdateCoordinator,
         description: BeurerSensorEntityDescription,
         address: str,
-        entry_id: str,
     ) -> None:
         """Инициализация сенсора."""
+        super().__init__(coordinator)
         self.entity_description = description
-        self.coordinator = coordinator
         self._address = address
         self._attr_unique_id = f"{address}_{description.key}"
-
-        # Регистрация в координаторе
-        coordinator.register_listener(self._handle_coordinator_update)
 
     @property
     def device_info(self):
@@ -253,36 +240,22 @@ class BeurerSensor(RestoreEntity, SensorEntity):
         }
 
     @property
-    def extra_state_attributes(self):
-        """Дополнительные атрибуты."""
-        attrs = {}
-        if self.coordinator.last_measurement_time:
-            attrs["last_measured"] = self.coordinator.last_measurement_time.isoformat()
-            age = (datetime.now() - self.coordinator.last_measurement_time).total_seconds()
-            attrs["measurement_age_minutes"] = int(age / 60)
-        return attrs
+    def native_value(self):
+        """Возвращает текущее значение сенсора."""
+        data_key = self.entity_description.data_key
+        return self.coordinator.data.get(data_key)
 
     async def async_added_to_hass(self) -> None:
         """Восстановление состояния при добавлении."""
         await super().async_added_to_hass()
 
+        # Восстановление последнего значения
         if (last_state := await self.async_get_last_state()) is not None:
             if last_state.state not in ("unknown", "unavailable"):
                 try:
-                    self._attr_native_value = float(last_state.state)
+                    # Сохраняем восстановленное значение в координаторе
+                    data_key = self.entity_description.data_key
+                    if not self.coordinator.data.get(data_key):
+                        self.coordinator._measurement_data[data_key] = float(last_state.state)
                 except (ValueError, TypeError):
                     pass
-
-    async def async_update(self) -> None:
-        """Обновление данных."""
-        await self.coordinator.async_update()
-
-    @callback
-    def _handle_coordinator_update(self) -> None:
-        """Обработка обновления от координатора."""
-        data_key = self.entity_description.data_key
-        value = self.coordinator.data.get(data_key)
-
-        if value is not None:
-            self._attr_native_value = value
-            self.async_write_ha_state()
