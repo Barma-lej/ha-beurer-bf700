@@ -143,51 +143,46 @@ class BeurerCoordinator(DataUpdateCoordinator):
                     
                     if service_count >= 14:
                         _LOGGER.warning("🔵 ВЕСЫ АКТИВНЫ! Сервисов: %d", service_count)
-                        
-                        ble_device = bluetooth.async_ble_device_from_address(
-                            self.hass, service_info.address, connectable=True
-                        )
-                        
-                        if ble_device:
-                            return await self._connect_and_read(ble_device)
-                        else:
-                            _LOGGER.warning("⚠️ Не удалось получить BLE device")
+                        return await self._connect_and_read(service_info.address)
             
         except Exception as err:
             _LOGGER.debug("Ошибка сканирования: %s", err)
         
         return self._measurement_data
 
-    async def _connect_and_read(self, ble_device) -> dict:
+    async def _connect_and_read(self, address: str) -> dict:
         """Подключение и чтение данных."""
         try:
-            _LOGGER.warning("🟢 ПОДКЛЮЧАЕМСЯ К ВЕСАМ...")
+            _LOGGER.warning("🟢 ПОДКЛЮЧАЕМСЯ К ВЕСАМ по адресу %s...", address)
             
-            async with BleakClient(ble_device, timeout=15.0) as client:
+            async with BleakClient(address, timeout=15.0) as client:
                 _LOGGER.warning("✅ ПОДКЛЮЧЕНО!")
                 
+                _LOGGER.info("Доступные сервисы:")
                 for service in client.services:
-                    _LOGGER.info("Сервис: %s", service.uuid)
+                    _LOGGER.info("  %s", service.uuid)
                     for char in service.characteristics:
-                        _LOGGER.info("  Характеристика: %s", char.uuid)
+                        _LOGGER.info("    -> %s", char.uuid)
                 
+                _LOGGER.info("📤 Подписка на уведомления")
                 await client.start_notify(NOTIFY_CHAR_UUID, self._notification_handler)
                 
-                _LOGGER.info("📤 Команда INIT...")
+                _LOGGER.info("📤 INIT")
                 await client.write_gatt_char(WRITE_CHAR_UUID, bytearray([CMD_INIT, 0x00]), response=False)
                 await asyncio.sleep(0.5)
                 
-                _LOGGER.info("📤 Команда SYNC...")
+                _LOGGER.info("📤 SYNC")
                 await client.write_gatt_char(WRITE_CHAR_UUID, bytearray([CMD_SYNC, 0x00]), response=False)
                 
+                _LOGGER.info("⏳ Ожидание 8 сек")
                 await asyncio.sleep(8)
                 
                 await client.stop_notify(NOTIFY_CHAR_UUID)
                 
                 if self._measurement_data:
-                    _LOGGER.warning("✅ ДАННЫЕ ПОЛУЧЕНЫ: %s", self._measurement_data)
+                    _LOGGER.warning("✅ ДАННЫЕ: %s", self._measurement_data)
                 else:
-                    _LOGGER.error("❌ Данные не получены!")
+                    _LOGGER.error("❌ Нет данных!")
                     
         except BleakError as err:
             _LOGGER.error("Ошибка Bleak: %s", err)
@@ -199,10 +194,10 @@ class BeurerCoordinator(DataUpdateCoordinator):
     @callback
     def _notification_handler(self, sender: int, data: bytearray) -> None:
         """Обработка уведомлений."""
-        _LOGGER.warning("📨 УВЕДОМЛЕНИЕ! Length: %d, Data: %s", len(data), data.hex())
+        _LOGGER.warning("📨 УВЕДОМЛЕНИЕ! Len: %d, Data: %s", len(data), data.hex())
         
         if len(data) < 20 or data[0] != 0xF7:
-            _LOGGER.warning("⚠️ Неправильный формат данных")
+            _LOGGER.warning("⚠️ Неправильный формат")
             return
         
         _LOGGER.warning("🟢 КОРРЕКТНЫЕ ДАННЫЕ!")
@@ -216,6 +211,7 @@ class BeurerCoordinator(DataUpdateCoordinator):
         }
         
         _LOGGER.warning("📊 Данные: %s", self._measurement_data)
+
 
 class BeurerSensor(CoordinatorEntity, SensorEntity):
     """Сенсор Beurer."""
