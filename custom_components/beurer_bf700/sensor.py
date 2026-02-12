@@ -24,7 +24,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
-    UpdateFailed,
 )
 
 from .const import (
@@ -128,14 +127,18 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, address: str) -> None:
         """Инициализация координатора."""
+        self._address = address
+        self._measurement_data: dict[str, float | None] = {}
+        
         super().__init__(
             hass,
             _LOGGER,
             name=f"Beurer BF 700 {address}",
             update_interval=SCAN_INTERVAL,
         )
-        self._address = address
-        self._measurement_data: dict[str, float | None] = {}
+        
+        # Устанавливаем начальное значение data
+        self.data = {}
 
     async def _async_update_data(self):
         """Получение данных с весов."""
@@ -153,11 +156,11 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
 
             if not service_info:
                 _LOGGER.debug("Устройство %s не обнаружено", self._address)
-                return self._measurement_data  # Возвращаем старые данные
+                return self.data or {}
 
             if not service_info.connectable:
                 _LOGGER.debug("Устройство %s не в режиме подключения", self._address)
-                return self._measurement_data
+                return self.data or {}
 
             _LOGGER.info("Устройство подключаемо, начинаем подключение к %s", self._address)
 
@@ -190,7 +193,7 @@ class BeurerDataUpdateCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.error("Неожиданная ошибка обновления: %s", err, exc_info=True)
 
-        return self._measurement_data
+        return self._measurement_data or {}
 
     @callback
     def _notification_handler(self, sender: int, data: bytearray) -> None:
@@ -228,6 +231,7 @@ class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
         self.entity_description = description
         self._address = address
         self._attr_unique_id = f"{address}_{description.key}"
+        self._restored_value: float | None = None
 
     @property
     def device_info(self):
@@ -242,20 +246,29 @@ class BeurerSensor(CoordinatorEntity, RestoreEntity, SensorEntity):
     @property
     def native_value(self):
         """Возвращает текущее значение сенсора."""
+        if self.coordinator.data is None:
+            return self._restored_value
+        
         data_key = self.entity_description.data_key
-        return self.coordinator.data.get(data_key)
+        value = self.coordinator.data.get(data_key)
+        
+        if value is None:
+            return self._restored_value
+            
+        return value
 
     async def async_added_to_hass(self) -> None:
         """Восстановление состояния при добавлении."""
         await super().async_added_to_hass()
 
-        # Восстановление последнего значения
         if (last_state := await self.async_get_last_state()) is not None:
             if last_state.state not in ("unknown", "unavailable"):
                 try:
-                    # Сохраняем восстановленное значение в координаторе
-                    data_key = self.entity_description.data_key
-                    if not self.coordinator.data.get(data_key):
-                        self.coordinator._measurement_data[data_key] = float(last_state.state)
+                    self._restored_value = float(last_state.state)
+                    _LOGGER.debug(
+                        "Восстановлено значение %s: %s",
+                        self.entity_description.key,
+                        self._restored_value,
+                    )
                 except (ValueError, TypeError):
                     pass
